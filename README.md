@@ -1,3 +1,8 @@
+> **This is DroidASC/asc-dexdec**: upstream [asLody/dexdec](https://github.com/asLody/dexdec)
+> plus `asc-dexdec-worker`, the program [asc](https://github.com/Ylarod/asc-rs) runs as its
+> built-in `dexdec` decompile backend. See [asc-dexdec-worker/README.md](asc-dexdec-worker/README.md)
+> for how asc finds and installs it and how to build it. The rest of this README is upstream's.
+
 
 
 <p align="center">
