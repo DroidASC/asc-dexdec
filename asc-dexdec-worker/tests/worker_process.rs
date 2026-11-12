@@ -111,6 +111,15 @@ impl Worker {
         }));
     }
 
+    /// The next frame, which must be a notification.
+    fn notification(&mut self) -> Notification {
+        match self.frames.recv_timeout(WAIT) {
+            Ok(Message::Notification(notification)) => notification,
+            Ok(message) => panic!("expected a notification, got {message:?}"),
+            Err(err) => panic!("no notification from the worker: {err}"),
+        }
+    }
+
     /// The next response, collecting the notifications before it.
     fn response(&mut self, notifications: &mut Vec<Notification>) -> Response {
         loop {
@@ -314,8 +323,11 @@ fn cancels_running_and_queued_requests() {
     let program = worker.open(&classes_dex());
     let running = worker.start(
         "decompile/classes",
-        decompile_params(&program, &["LHelloWorld;"]),
+        json!({"programId": program, "classes": ["LSimpleIf;", "LHelloWorld;"], "language": "java", "progressToken": "t"}),
     );
+    // Progress after the first class: `running` holds the session, stalled
+    // on the second one.
+    assert_eq!(worker.notification().method, "notifications/progress");
     // Same session: waits for `running` inside the worker.
     let queued = worker.start(
         "decompile/classes",
