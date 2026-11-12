@@ -33,6 +33,10 @@ jobs:
             os: macos-latest
           - target: x86_64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -54,23 +58,25 @@ jobs:
       - name: Build
         working-directory: asc-dexdec/asc-dexdec-worker
         run: cargo build --release --target ${{ matrix.target }}
-      # asc-dexdec-worker-p<P>-<target>/{asc-dexdec-worker,LICENSE}, nothing
-      # else: asc's installer rejects archives with other entries. P comes
-      # from the binary itself (x86_64-apple-darwin runs under Rosetta).
-      # COPYFILE_DISABLE keeps macOS tar from adding ._ files.
+      # asc-dexdec-worker-p<P>-<target>/{asc-dexdec-worker[.exe],LICENSE},
+      # nothing else: asc's installer rejects archives with other entries.
+      # P comes from the binary itself (x86_64-apple-darwin runs under
+      # Rosetta). COPYFILE_DISABLE keeps macOS tar from adding ._ files.
       - name: Package
         shell: bash
         env:
           COPYFILE_DISABLE: 1
         run: |
           worker=asc-dexdec/asc-dexdec-worker/target/${{ matrix.target }}/release/asc-dexdec-worker
+          [[ "${{ matrix.target }}" == *-windows-* ]] && worker=$worker.exe
           protocol=$("$worker" --protocol-version)
           [[ "$protocol" =~ ^[0-9]+$ ]] || { echo "bad protocol version: $protocol"; exit 1; }
           name=asc-dexdec-worker-p${protocol}-${{ matrix.target }}
           mkdir "$name"
           cp "$worker" asc-dexdec/LICENSE "$name"/
           tar czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          if command -v shasum >/dev/null; then sha256=(shasum -a 256); else sha256=(sha256sum); fi
+          "${sha256[@]}" "$name.tar.gz" > "$name.tar.gz.sha256"
           tar tzf "$name.tar.gz"
       - uses: actions/upload-artifact@v7
         with:

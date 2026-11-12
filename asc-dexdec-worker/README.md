@@ -103,7 +103,7 @@ and asc's, never set it otherwise.
 ## Releases
 
 Pushing a `v<version>` tag (upstream dexdec's version, which
-`asc-dexdec-worker/Cargo.toml` carries) builds the worker for x86_64 / aarch64 Linux and macOS and publishes
+`asc-dexdec-worker/Cargo.toml` carries) builds the worker for x86_64 / aarch64 Linux, macOS and Windows and publishes
 `asc-dexdec-worker-p<P>-<target>.tar.gz` (a directory holding the binary and
 `LICENSE`) with its `.sha256` as the latest release. Worker-only changes on
 the same upstream version are released as `v<version>-r<N>`. Upstream's own
