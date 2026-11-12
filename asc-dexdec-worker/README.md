@@ -1,12 +1,20 @@
 # asc-dexdec-worker
 
 This repository is upstream [dexdec](https://github.com/asLody/dexdec)
-(Apache-2.0, by asLody and contributors) plus one addition: `asc-dexdec-worker`,
-the program [asc](https://github.com/Ylarod/asc-rs) runs as its built-in
-`dexdec` decompile backend. The decompiler itself (`dexdec/`, `rusty-dex/`, …)
-is upstream's code, unchanged; everything in this directory is glue that serves
-asc's decompile backend protocol (asc-rs `docs/decompile-backends.md` §5–§6)
-on top of dexdec's public API.
+(Apache-2.0, by asLody and contributors) plus two additions:
+
+- `asc-dexdec-worker`, the program [asc](https://github.com/Ylarod/asc-rs) runs
+  as its built-in `dexdec` decompile backend. Everything in this directory is
+  glue that serves asc's decompile backend protocol (asc-rs
+  `docs/decompile-backends.md` §5–§6) on top of dexdec's public API.
+- User name mappings in the library: `Decompiler::open_with_names` reads a
+  program under the class, field and method names of a mapping the user
+  supplies (asc translates R8 / ProGuard `mapping.txt`). The renaming lives in
+  `dexdec/src/frontend/names*` and is applied to rusty-dex's type, prototype,
+  field and method tables right after the program is opened (with a few
+  generic accessors added to `rusty-dex`). Without mappings, nothing changes.
+
+Otherwise the decompiler (`dexdec/`, `rusty-dex/`, …) is upstream's code.
 
 ## How asc finds it
 
@@ -60,7 +68,7 @@ What `initialize` declares, and why:
 | `backend` | `{"name": "dexdec", "version": <upstream dexdec's version>}` |
 | `inputs` | `["archive"]`: one APK, jar or DEX file per program (upstream opens a single file); `slice` input is refused with `-33002` |
 | `languages` | `["java", "kotlin"]` |
-| `mappings` | `false`: upstream dexdec cannot rename a program's classes and members |
+| `mappings` | `true`: see *Name mappings* below |
 | `methodStatus` | `true`: methods dexdec prints as failure stubs are reported as `failed`, from its `AnalysisObserver` `MethodFailure` events; a unit with any is `partial` |
 | `maxConcurrency` | `4`: requests on one program take turns, programs work in parallel |
 
@@ -72,6 +80,14 @@ What `initialize` declares, and why:
   the unit of its top-level class when that unit folds it in, and every unit
   lists the nested classes whose code dexdec went through while generating it
   in `nestedClasses`. Otherwise the nested class is decompiled on its own.
+- Name mappings: `program/open` `mappings` (`classes`: DEX descriptor → new
+  descriptor; `fields`, `methods`: `Lowner;->member` → new simple name) open
+  the program with `Decompiler::open_with_names`, for Java and Kotlin alike. A
+  malformed entry is refused with `-32602`; a rename dexdec drops (two classes
+  or members of one class to one name, a class onto a platform class) keeps the
+  DEX's name and is logged (`asc-dexdec-worker: mapping: …`). The protocol keeps
+  the DEX's names (`class`, `nestedClasses`, failed method signatures); the
+  source text and its `path` show the new ones.
 - Cancellation: `notifications/cancelled` stops a request waiting for its
   program at once, and a running one at dexdec's next cancellation checkpoint
   (between methods and pipeline stages); it is answered with `-32800`.

@@ -184,7 +184,7 @@ fn initialize_open_decompile_close_shutdown() {
     );
     assert_eq!(capabilities["inputs"], json!(["archive"]));
     assert_eq!(capabilities["languages"], json!(["java", "kotlin"]));
-    assert_eq!(capabilities["mappings"], false);
+    assert_eq!(capabilities["mappings"], true);
     assert_eq!(capabilities["methodStatus"], true);
     assert_eq!(capabilities["maxConcurrency"], 4);
     let hash = capabilities["optionsHash"].as_str().unwrap();
@@ -534,6 +534,134 @@ fn nested_classes_answer_with_the_unit_they_are_folded_into() {
         "{}",
         alone["units"][0]
     );
+}
+
+/// Opens `file` under `mappings` (the protocol's `classes`, `fields`,
+/// `methods` tables).
+fn open_with_mappings(worker: &mut Worker, file: &Path, mappings: Value) -> String {
+    let params = json!({"input": {"kind": "archive", "files": [file]}, "mappings": mappings});
+    let result = worker.call("program/open", params).expect("program opens");
+    result["programId"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn mappings_rename_the_source_and_the_protocol_keeps_dex_names() {
+    let mut worker = Worker::spawn_logging(None, Stdio::piped());
+    let mut stderr = worker.child.stderr.take().unwrap();
+    let log = thread::spawn(move || {
+        let mut log = String::new();
+        std::io::Read::read_to_string(&mut stderr, &mut log).unwrap();
+        log
+    });
+    worker
+        .call("initialize", initialize_params())
+        .expect("initialize succeeds");
+    let mappings = json!({
+        "classes": {
+            "LSynchronizedAdvanced;": "Lcom/example/Renamed;",
+            // Onto a class that keeps its name: dropped.
+            "LSimpleIf;": "LHelloWorld;",
+        },
+        "fields": {"LSynchronizedAdvanced;->value:I": "counter"},
+        "methods": {"LSynchronizedAdvanced;->helper(I)I": "assist"},
+    });
+    let program = open_with_mappings(&mut worker, &classes_dex(), mappings);
+    let result = worker
+        .call(
+            "decompile/classes",
+            decompile_params(
+                &program,
+                &[
+                    "LSynchronizedAdvanced;",
+                    "LSimpleIf;",
+                    "Lcom/example/Renamed;",
+                ],
+            ),
+        )
+        .unwrap();
+    let units = result["units"].as_array().unwrap();
+
+    let renamed = &units[0];
+    assert_eq!(renamed["class"], "LSynchronizedAdvanced;");
+    assert_eq!(renamed["status"], "ok", "{renamed}");
+    assert_eq!(renamed["path"], "com/example/Renamed.java");
+    let text = renamed["text"].as_str().unwrap();
+    assert!(text.starts_with("package com.example;"), "{text}");
+    assert!(text.contains("class Renamed"), "{text}");
+    assert!(text.contains("assist("), "{text}");
+    assert!(text.contains("counter"), "{text}");
+    assert!(!text.contains("helper"), "{text}");
+    assert!(!text.contains("SynchronizedAdvanced"), "{text}");
+
+    assert_eq!(units[1]["class"], "LSimpleIf;");
+    assert_eq!(units[1]["path"], "SimpleIf.java");
+    assert!(
+        units[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("class SimpleIf"),
+        "{}",
+        units[1]
+    );
+    // The new name is not a DEX class.
+    assert_eq!(
+        units[2],
+        json!({"class": "Lcom/example/Renamed;", "status": "failed", "reason": "class not found: Lcom/example/Renamed;"})
+    );
+
+    let (code, message) = worker
+        .call(
+            "program/open",
+            json!({"input": {"kind": "archive", "files": [classes_dex()]}, "mappings": {"classes": {"LA;": "B"}}}),
+        )
+        .unwrap_err();
+    assert_eq!(code, ErrorCode::INVALID_PARAMS);
+    assert!(message.contains("class mapping"), "{message}");
+
+    assert!(worker.finish().success());
+    let log = log.join().unwrap();
+    assert!(
+        log.contains("asc-dexdec-worker: mapping: class LSimpleIf; keeps its name: LHelloWorld; names another class"),
+        "{log}"
+    );
+}
+
+/// asc's nested-class fixture, renamed: the inner class moves with its
+/// outer class.
+#[test]
+fn a_renamed_outer_class_takes_its_nested_classes_along() {
+    let dex = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../asc-rs/crates/asc-cli/tests/data/nest.dex");
+    if !dex.exists() {
+        eprintln!("skipped: {} is missing", dex.display());
+        return;
+    }
+    let mut worker = Worker::started();
+    let program = open_with_mappings(
+        &mut worker,
+        &dex,
+        json!({"classes": {"LNest;": "Lp/Outer;"}}),
+    );
+    let result = worker
+        .call(
+            "decompile/classes",
+            decompile_params(&program, &["LNest;", "LNest$Inner;"]),
+        )
+        .unwrap();
+    let units = result["units"].as_array().unwrap();
+    assert_eq!(units[0]["class"], "LNest;");
+    assert_eq!(units[0]["path"], "p/Outer.java");
+    assert_eq!(units[0]["nestedClasses"], json!(["LNest$Inner;"]));
+    let text = units[0]["text"].as_str().unwrap();
+    assert!(text.contains("class Outer"), "{text}");
+    assert!(text.contains("class Inner {"), "{text}");
+    assert!(!text.contains("Nest"), "{text}");
+    assert_eq!(units[1], units[0]);
+
+    let params = json!({"programId": program, "classes": ["LNest$Inner;"], "language": "java", "nested": false});
+    let alone = worker.call("decompile/classes", params).unwrap();
+    assert_eq!(alone["units"][0]["class"], "LNest$Inner;");
+    assert_eq!(alone["units"][0]["path"], "p/Outer$Inner.java");
 }
 
 #[test]

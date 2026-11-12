@@ -1,5 +1,10 @@
 //! One `program/open` session: a dexdec [`Decompiler`] over the program and
 //! the protocol units it produces.
+//!
+//! The protocol names classes and methods as the DEX does. When the program
+//! is opened with name mappings, the decompiler knows them by their new
+//! names; the session translates at the boundary, so only the source text
+//! and its `path` show the new names.
 
 use std::collections::HashMap;
 use std::path::{Component, Path};
@@ -7,7 +12,9 @@ use std::sync::Arc;
 
 use asc_decompile_protocol::methods::{ClassUnit, MethodReport, MethodStatus, UnitOutcome};
 use dexdec::ir::NullAnalysisObserver;
-use dexdec::{DecompileError, DecompileOptions, Decompiler, SourceLanguage, SourceUnit};
+use dexdec::{
+    DecompileError, DecompileOptions, Decompiler, NameMappings, SourceLanguage, SourceUnit,
+};
 
 use crate::fault::Fault;
 use crate::observer::{CancelFlag, ClassObserver, ClassReport, FailedMethod};
@@ -33,11 +40,22 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// Opens one APK, jar or DEX file; the error is dexdec's reason.
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        Ok(Self {
-            decompiler: Decompiler::open(path).map_err(|err| err.to_string())?,
-        })
+    /// Opens one APK, jar or DEX file under the names of `mappings`; the
+    /// error is dexdec's reason. Mappings dexdec drops are logged.
+    pub(crate) fn open(path: &Path, mappings: &NameMappings) -> Result<Self, String> {
+        let session = Self {
+            decompiler: Decompiler::open_with_names(path, mappings)
+                .map_err(|err| err.to_string())?,
+        };
+        session.report_name_warnings();
+        Ok(session)
+    }
+
+    /// Mappings dexdec dropped since the last call, on stderr.
+    fn report_name_warnings(&self) {
+        for warning in self.decompiler.take_name_warnings() {
+            eprintln!("asc-dexdec-worker: mapping: {warning}");
+        }
     }
 
     /// The units of `classes`, one per class, in order. Outer classes
@@ -61,6 +79,7 @@ impl Session {
         }
         // The last observer holds nothing worth keeping across requests.
         self.decompiler.set_observer(Arc::new(NullAnalysisObserver));
+        self.report_name_warnings();
         Ok(units)
     }
 
@@ -73,8 +92,12 @@ impl Session {
         request: &ClassRequest<'_>,
         outers: &mut HashMap<String, Option<ClassUnit>>,
     ) -> Result<ClassUnit, Cancelled> {
+        let Some(source_class) = self.source_class(class) else {
+            let reason = DecompileError::ClassNotFound(class.to_owned()).to_string();
+            return Ok(ClassUnit::new(class, UnitOutcome::Failed { reason }));
+        };
         if request.nested
-            && let Some(outer) = self.top_level(class)
+            && let Some(outer) = self.top_level(&source_class)
         {
             if !outers.contains_key(&outer) {
                 let unit = match self.generate(&outer, class, request)? {
@@ -95,11 +118,19 @@ impl Session {
             }
         }
         Ok(self
-            .generate(class, class, request)?
+            .generate(&source_class, class, request)?
             .unwrap_or_else(|reason| ClassUnit::new(class, UnitOutcome::Failed { reason })))
     }
 
-    /// The outermost lexical owner of `class`, if it is nested.
+    /// The name the decompiler knows the DEX class `class` by; `None` when
+    /// that is the new name of another class, so the DEX has no `class`.
+    fn source_class(&self, class: &str) -> Option<String> {
+        let source = self.decompiler.source_class(class);
+        (self.decompiler.dex_class(source) == class).then(|| source.to_owned())
+    }
+
+    /// The outermost lexical owner of `class` (by its source name), if it is
+    /// nested.
     fn top_level(&self, class: &str) -> Option<String> {
         let reader = self.decompiler.reader();
         let mut outer = reader.lexical_parent(class)?;
@@ -114,9 +145,9 @@ impl Session {
         (outer != class).then(|| outer.to_owned())
     }
 
-    /// Generates the unit of `class` on the large-stack pool; the inner
-    /// result is the failure reason. A panic fails this class only. Faults
-    /// injected for DEX class `requested` fire here.
+    /// Generates the unit of `class` (by its source name) on the large-stack
+    /// pool; the inner result is the failure reason. A panic fails this class
+    /// only. Faults injected for DEX class `requested` fire here.
     fn generate(
         &mut self,
         class: &str,
@@ -139,6 +170,10 @@ impl Session {
                 // The error as its reason here: dexdec's error type is large.
                 decompiler.class(class).map_err(|error| match error {
                     DecompileError::Cancelled(_) => Err(Cancelled),
+                    DecompileError::ClassNotFound(missing) => Ok(DecompileError::ClassNotFound(
+                        decompiler.dex_class(&missing).to_owned(),
+                    )
+                    .to_string()),
                     error => Ok(error.to_string()),
                 })
             })
@@ -156,12 +191,13 @@ impl Session {
     }
 
     /// `unit` as the protocol unit of its class, with the failed methods and
-    /// folded nested classes `report` found.
+    /// folded nested classes `report` found, all under their DEX names.
     fn protocol_unit(&self, unit: SourceUnit, report: ClassReport, nested: bool) -> ClassUnit {
+        let class = self.decompiler.dex_class(&unit.class).to_owned();
         let methods = report
             .failures
             .iter()
-            .map(|failed| method_report(&unit.class, failed))
+            .map(|failed| method_report(&class, &self.dex_method(failed)))
             .collect::<Vec<_>>();
         // A nested class whose code dexdec went through while generating
         // the unit is folded into its text.
@@ -170,6 +206,7 @@ impl Session {
                 .processed
                 .into_iter()
                 .filter(|other| self.is_nested_in(other, &unit.class))
+                .map(|other| self.decompiler.dex_class(&other).to_owned())
                 .collect()
         } else {
             Vec::new()
@@ -181,9 +218,22 @@ impl Session {
         } else {
             UnitOutcome::Partial { path, text }
         };
-        ClassUnit::new(unit.class, outcome)
+        ClassUnit::new(class, outcome)
             .methods(methods)
             .nested_classes(nested_classes)
+    }
+
+    /// `failed` under the DEX's names.
+    fn dex_method(&self, failed: &FailedMethod) -> FailedMethod {
+        let (class, name, descriptor) =
+            self.decompiler
+                .dex_method(&failed.class, &failed.name, &failed.descriptor);
+        FailedMethod {
+            class,
+            name,
+            descriptor,
+            reason: failed.reason.clone(),
+        }
     }
 
     /// Whether `class` is lexically nested, at any depth, in `outer`.

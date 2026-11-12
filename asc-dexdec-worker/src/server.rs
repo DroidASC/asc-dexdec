@@ -7,6 +7,10 @@
 //! * A program session keeps its file open and loads classes on demand.
 //!   Requests on one session take turns; sessions work in parallel.
 //! * A panic while decompiling a class fails that class only.
+//! * `program/open` `mappings` rename the session's program for Java and
+//!   Kotlin alike (see [`dexdec::Decompiler::open_with_names`]); the protocol
+//!   keeps the DEX's names (`class`, `nestedClasses`, failed method
+//!   signatures), only the source and its `path` show the new ones.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -20,15 +24,15 @@ use std::time::{Duration, Instant};
 use asc_decompile_protocol::methods::{
     Cancelled, CancelledParams, DecompileClasses, DecompileClassesParams, DecompileClassesResult,
     Empty, Implementation, Initialize, InitializeParams, InitializeResult, InputKind, Language,
-    ProgramClose, ProgramCloseParams, ProgramId, ProgramInput, ProgramOpen, ProgramOpenParams,
-    ProgramOpenResult, Progress, ProgressParams, Shutdown,
+    Mappings, ProgramClose, ProgramCloseParams, ProgramId, ProgramInput, ProgramOpen,
+    ProgramOpenParams, ProgramOpenResult, Progress, ProgressParams, Shutdown,
 };
 use asc_decompile_protocol::server::Outgoing;
 use asc_decompile_protocol::{
     ErrorCode, ErrorObject, FrameError, FrameReader, Message, Method, NotificationMethod,
     PROTOCOL_VERSION, Request, RequestId, Response,
 };
-use dexdec::SourceLanguage;
+use dexdec::{NameMappingError, NameMappings, SourceLanguage};
 use serde_json::Value;
 
 use crate::fault::Fault;
@@ -354,8 +358,7 @@ impl<W: Write + Send + 'static> Server<W> {
         )
         .inputs(vec![InputKind::Archive])
         .languages(vec![Language::Java, Language::Kotlin])
-        // Upstream dexdec has no way to rename a program's classes and members.
-        .mappings(false)
+        .mappings(true)
         .method_status(true)
         .max_concurrency(MAX_CONCURRENCY))
     }
@@ -370,14 +373,12 @@ impl<W: Write + Send + 'static> Server<W> {
                 ));
             }
         };
-        if params
+        let mappings = params
             .mappings
             .as_ref()
-            .is_some_and(|mappings| !mappings.is_empty())
-        {
-            // asc only sends them when `initialize` said `mappings: true`.
-            eprintln!("asc-dexdec-worker: ignoring name mappings; this dexdec cannot apply them");
-        }
+            .map(name_mappings)
+            .transpose()?
+            .unwrap_or_default();
         let path = match files.as_slice() {
             [file] => file,
             [] => return Err(invalid_params("`input.files` is empty")),
@@ -389,7 +390,7 @@ impl<W: Write + Send + 'static> Server<W> {
             }
         };
         let started = Instant::now();
-        let session = Session::open(path).map_err(|reason| {
+        let session = Session::open(path, &mappings).map_err(|reason| {
             invalid_params(format!("cannot open {}: {reason}", path.display()))
         })?;
         let id = format!("p{}", self.next_program.fetch_add(1, Ordering::Relaxed));
@@ -499,4 +500,26 @@ fn program_not_found(id: &ProgramId) -> ErrorObject {
         ErrorCode::PROGRAM_NOT_FOUND,
         format!("no program session `{}`", id.0),
     )
+}
+
+/// `mappings` as dexdec takes them; a malformed entry is an invalid parameter.
+fn name_mappings(mappings: &Mappings) -> Result<NameMappings, ErrorObject> {
+    let mut names = NameMappings::new();
+    let bad = |error: NameMappingError| invalid_params(error.to_string());
+    for (descriptor, new) in &mappings.classes {
+        names
+            .insert_class(descriptor.as_str(), new.as_str())
+            .map_err(bad)?;
+    }
+    for (signature, new) in &mappings.fields {
+        names
+            .insert_field(signature.as_str(), new.as_str())
+            .map_err(bad)?;
+    }
+    for (signature, new) in &mappings.methods {
+        names
+            .insert_method(signature.as_str(), new.as_str())
+            .map_err(bad)?;
+    }
+    Ok(names)
 }
