@@ -1,0 +1,40 @@
+# Lints and tests asc-dexdec-worker against asc-rs (checked out next to this
+# repository for the protocol crate). Upstream dexdec's own CI runs in
+# asLody/dexdec.
+name: CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: asc-dexdec/asc-dexdec-worker
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: asc-dexdec
+      - uses: actions/checkout@v7
+        with:
+          repository: Ylarod/asc-rs
+          path: asc-rs
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: asc-dexdec/asc-dexdec-worker -> target
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
