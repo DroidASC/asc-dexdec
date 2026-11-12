@@ -14,7 +14,7 @@ use crate::analysis::{
     JavaDecompiler, JavaDecompilerConfig, KotlinDecompiler, KotlinDecompilerConfig,
 };
 use crate::frontend::kotlin_metadata::KotlinMetadata;
-use crate::frontend::DexFileReader;
+use crate::frontend::{DexFileReader, NameMappings};
 use crate::ir::analysis::ClassHierarchyIndex;
 use crate::ir::{AnalysisObserver, NullAnalysisObserver};
 use crate::language::java::JavaIdentifier;
@@ -211,9 +211,45 @@ impl Decompiler {
         Ok(Self::from_reader(DexFileReader::from_bytes(bytes)?))
     }
 
+    /// [`open`](Self::open)s a program under the names of `mappings` (from a
+    /// mapping file the user supplies): declarations and every reference to
+    /// them show the new names, still escaped where the source language
+    /// needs it. String constants keep their text.
+    ///
+    /// Requests name classes as the source does: once a class is renamed,
+    /// [`class`](Self::class) and the other requests take its new
+    /// descriptor, and [`SourceUnit`]s report new names;
+    /// [`source_class`](Self::source_class) and [`dex_class`](Self::dex_class)
+    /// translate. A mapping that would give two classes, a class and a
+    /// platform class, or two members of one class the same name is dropped;
+    /// [`take_name_warnings`](Self::take_name_warnings) says which.
+    pub fn open_with_names(
+        path: impl AsRef<Path>,
+        mappings: &NameMappings,
+    ) -> Result<Self, DecompileError> {
+        Ok(Self::from_context(DecompilerContext::from_file_with_names(
+            path, mappings,
+        )?))
+    }
+
+    /// [`from_bytes`](Self::from_bytes) under the names of `mappings`, as
+    /// [`open_with_names`](Self::open_with_names).
+    pub fn from_bytes_with_names(
+        bytes: &[u8],
+        mappings: &NameMappings,
+    ) -> Result<Self, DecompileError> {
+        Ok(Self::from_reader(DexFileReader::from_bytes_with_names(
+            bytes, mappings,
+        )?))
+    }
+
     pub fn from_reader(reader: DexFileReader) -> Self {
+        Self::from_context(DecompilerContext::from_reader(reader))
+    }
+
+    fn from_context(context: DecompilerContext) -> Self {
         Self {
-            context: DecompilerContext::from_reader(reader),
+            context,
             options: DecompileOptions::default(),
             observer: Arc::new(NullAnalysisObserver),
             reference_cache: HashMap::new(),
@@ -250,6 +286,51 @@ impl Decompiler {
 
     pub fn reader(&self) -> &DexFileReader {
         self.context.reader()
+    }
+
+    /// The descriptor the source shows for the DEX class `descriptor`: its
+    /// new name when the program was opened with mappings renaming it.
+    pub fn source_class<'a>(&'a self, descriptor: &'a str) -> &'a str {
+        self.reader()
+            .names()
+            .map_or(descriptor, |names| names.source_class(descriptor))
+    }
+
+    /// The DEX descriptor of the class the source calls `descriptor`; the
+    /// inverse of [`source_class`](Self::source_class).
+    pub fn dex_class<'a>(&'a self, descriptor: &'a str) -> &'a str {
+        self.reader()
+            .names()
+            .map_or(descriptor, |names| names.dex_class(descriptor))
+    }
+
+    /// The method the source shows as `class->name descriptor`, under the
+    /// DEX's own names: its class descriptor, name and `(Args)Ret`
+    /// descriptor. Only the class is translated when the class declares no
+    /// such method.
+    pub fn dex_method(
+        &self,
+        class: &str,
+        name: &str,
+        descriptor: &str,
+    ) -> (String, String, String) {
+        let dex_class = self.dex_class(class).to_string();
+        let member = self
+            .reader()
+            .names()
+            .and_then(|names| names.dex_method(class, name, descriptor));
+        let (name, descriptor) =
+            member.unwrap_or_else(|| (name.to_string(), descriptor.to_string()));
+        (dex_class, name, descriptor)
+    }
+
+    /// Mappings dropped since the last call (see
+    /// [`open_with_names`](Self::open_with_names)), one sentence each.
+    pub fn take_name_warnings(&self) -> Vec<String> {
+        self.reader()
+            .names()
+            .map(|names| names.take_warnings())
+            .unwrap_or_default()
     }
 
     pub fn reader_mut(&mut self) -> &mut DexFileReader {

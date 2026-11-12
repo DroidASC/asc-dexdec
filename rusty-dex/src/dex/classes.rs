@@ -1079,7 +1079,9 @@ fn extract_throws_types(annotation: &EncodedAnnotation) -> Option<Vec<String>> {
 }
 
 impl ClassDefItem {
-    pub(crate) fn members_loaded(&self) -> bool {
+    /// Whether the fields and methods of this class are decoded (see
+    /// [`DexFile::materialize_class`](crate::dex::file::DexFile::materialize_class)).
+    pub fn members_loaded(&self) -> bool {
         self.members_loaded
     }
 
@@ -1153,6 +1155,32 @@ impl ClassDefItem {
         if let Some(class_data) = &self.class_data {
             fields.extend(&class_data.static_fields);
             fields.extend(&class_data.instance_fields);
+        }
+
+        fields
+    }
+
+    /// The methods of a class definition, mutable, in the order of
+    /// [`get_methods`](Self::get_methods).
+    pub fn get_methods_mut(&mut self) -> Vec<&mut EncodedMethod> {
+        let mut methods = Vec::new();
+
+        if let Some(class_data) = &mut self.class_data {
+            methods.extend(&mut class_data.direct_methods);
+            methods.extend(&mut class_data.virtual_methods);
+        }
+
+        methods
+    }
+
+    /// The fields declared by this class, mutable, in the order of
+    /// [`get_fields`](Self::get_fields).
+    pub fn get_fields_mut(&mut self) -> Vec<&mut EncodedField> {
+        let mut fields = Vec::new();
+
+        if let Some(class_data) = &mut self.class_data {
+            fields.extend(&mut class_data.static_fields);
+            fields.extend(&mut class_data.instance_fields);
         }
 
         fields

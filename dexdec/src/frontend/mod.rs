@@ -31,6 +31,7 @@ mod field_node;
 pub mod kotlin_metadata;
 mod metadata;
 mod method_node;
+mod names;
 
 pub use access_info::*;
 pub use analysis_diagnostic::*;
@@ -39,3 +40,4 @@ pub use dex_reader::*;
 pub use field_node::*;
 pub use metadata::*;
 pub use method_node::*;
+pub use names::{NameMappingError, NameMappings};

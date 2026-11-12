@@ -286,6 +286,28 @@ impl DexFile {
         Ok(())
     }
 
+    /// Decode the class directory again, at the declaration level of
+    /// [`build_metadata`](Self::build_metadata), from the current `types`,
+    /// `protos`, `fields`, `methods` and `strings` tables: after editing
+    /// those tables, class names, superclasses, interfaces and annotations
+    /// follow the edits. Classes decoded by
+    /// [`materialize_class`](Self::materialize_class) are back to declarations.
+    pub fn rebuild_declarations(&mut self) -> Result<(), DexError> {
+        let mut reader = self.source_reader()?;
+        self.classes = DexClasses::build_with_level(
+            &mut reader,
+            self.header.class_defs_off,
+            self.header.class_defs_size,
+            &self.fields,
+            &self.types,
+            &self.protos,
+            &self.strings,
+            &self.methods,
+            ClassDecodeLevel::Declaration,
+        )?;
+        Ok(())
+    }
+
     /// Returns a vector containing the names of all the classes defined in the DEX file
     pub fn get_classes_names(&self) -> Vec<&String> {
         let mut class_names = Vec::new();

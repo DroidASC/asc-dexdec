@@ -6,6 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use super::names::{self, NameMappings, ProgramNames};
+
 use super::{
     AccessInfo, AnalysisDiagnostic, AnnotationNode, ClassInfo, ClassInfoError, ClassMetadata,
     ClassNode, DebugInfo, DexValue, EnclosingInfo, ExceptionHandler, FieldInfo, FieldNode,
@@ -249,6 +251,8 @@ pub struct DexFileReader {
     analysis_diagnostics: Vec<AnalysisDiagnostic>,
     /// Monotonic revision for loaded class graph and reader-derived analyses.
     loaded_classes_revision: u64,
+    /// The names the program is read under, when it is opened with mappings.
+    names: Option<ProgramNames>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -283,12 +287,22 @@ pub(crate) struct DexReferenceLocation {
 impl DexFileReader {
     /// Load DEX file from path (supports both APK and raw DEX files)
     pub fn from_file<P: AsRef<Path>>(path: P) -> DexResult<Self> {
+        Self::from_file_with_names(path, &NameMappings::new())
+    }
+
+    /// [`Self::from_file`], reading the program under the names of
+    /// `mappings`: every class, field and method the reader hands out has
+    /// its new name.
+    pub fn from_file_with_names<P: AsRef<Path>>(
+        path: P,
+        mappings: &NameMappings,
+    ) -> DexResult<Self> {
         let path_ref = path.as_ref();
 
         // Check if it's a raw DEX file
         if is_raw_dex(path_ref)? {
             let data = std::fs::read(path_ref)?;
-            return Self::from_bytes(&data);
+            return Self::from_bytes_with_names(&data, mappings);
         }
 
         let path_str = path_ref.to_string_lossy().to_string();
@@ -317,10 +331,7 @@ impl DexFileReader {
             })
         })?;
 
-        Ok(crate::profile_scope!(
-            "frontend.apk.index",
-            Self::new(dex_files)
-        ))
+        Self::with_names(dex_files, mappings)
     }
 
     /// Load a raw DEX file (not inside an APK)
@@ -341,9 +352,36 @@ impl DexFileReader {
 
     /// Load DEX from raw bytes
     pub fn from_bytes(data: &[u8]) -> DexResult<Self> {
+        Self::from_bytes_with_names(data, &NameMappings::new())
+    }
+
+    /// [`Self::from_bytes`] under the names of `mappings`, as
+    /// [`Self::from_file_with_names`].
+    pub fn from_bytes_with_names(data: &[u8], mappings: &NameMappings) -> DexResult<Self> {
         let reader = rusty_dex::dex::reader::DexReader::build(data.to_vec())?;
         let dex = rusty_dex::dex::file::DexFile::build_metadata(reader)?;
-        Ok(Self::new(vec![dex]))
+        Self::with_names(vec![dex], mappings)
+    }
+
+    /// Indexes `dex_files` read under the names of `mappings`; without
+    /// mappings they are indexed as they are.
+    fn with_names(
+        mut dex_files: Vec<rusty_dex::dex::file::DexFile>,
+        mappings: &NameMappings,
+    ) -> DexResult<Self> {
+        let names = crate::profile_scope!(
+            "frontend.apk.names",
+            names::dex_file::apply(&mut dex_files, mappings)
+        )?;
+        let mut reader = crate::profile_scope!("frontend.apk.index", Self::new(dex_files));
+        reader.names = names;
+        Ok(reader)
+    }
+
+    /// The names the program is read under; `None` when it was opened
+    /// without mappings.
+    pub(crate) fn names(&self) -> Option<&ProgramNames> {
+        self.names.as_ref()
     }
 
     /// Create from existing DexFile structures
@@ -365,6 +403,7 @@ impl DexFileReader {
             override_analysis_state: AnalysisState::Dirty,
             analysis_diagnostics: Vec::new(),
             loaded_classes_revision: 0,
+            names: None,
         }
     }
 
@@ -491,7 +530,7 @@ impl DexFileReader {
                 let class_name = self.dex_files[dex_idx].classes.items[class_index]
                     .get_class_name()
                     .clone();
-                self.dex_files[dex_idx].materialize_class(class_index)?;
+                self.materialize_class(dex_idx, class_index)?;
                 let class_node = {
                     let dex = &self.dex_files[dex_idx];
                     self.load_class_from_def(
@@ -536,7 +575,7 @@ impl DexFileReader {
         let Some(&(dex_index, class_index)) = self.class_locations.get(class_name) else {
             return Ok(None);
         };
-        self.dex_files[dex_index].materialize_class(class_index)?;
+        self.materialize_class(dex_index, class_index)?;
         let id = self.classes.len() as u32; // IDs are local to the loaded class set.
         let class_node = {
             let dex = &self.dex_files[dex_index];
@@ -571,7 +610,7 @@ impl DexFileReader {
         let Some(&(dex_index, class_index)) = self.class_locations.get(class_name) else {
             return Ok(false);
         };
-        self.dex_files[dex_index].materialize_class(class_index)?;
+        self.materialize_class(dex_index, class_index)?;
         let id = self.classes.len() as u32;
         let class_node = {
             let dex = &self.dex_files[dex_index];
@@ -579,6 +618,22 @@ impl DexFileReader {
         };
         self.classes.insert(class_name.to_string(), class_node);
         Ok(true)
+    }
+
+    /// Decodes the members of class `class_index` of DEX `dex_index`, under
+    /// the program's names.
+    fn materialize_class(&mut self, dex_index: usize, class_index: usize) -> DexResult<()> {
+        let dex = &mut self.dex_files[dex_index];
+        let decoded = dex
+            .classes
+            .items
+            .get(class_index)
+            .is_some_and(|class| class.members_loaded());
+        dex.materialize_class(class_index)?;
+        if let (false, Some(names)) = (decoded, &self.names) {
+            names::dex_file::rename_class(names, &mut dex.classes.items[class_index]);
+        }
+        Ok(())
     }
 
     /// Load a class from ClassDefItem

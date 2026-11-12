@@ -17,7 +17,7 @@ use crate::analysis::{
     NestedClassInput,
 };
 use crate::decoder::method_decoder::MethodDecoder;
-use crate::frontend::{ClassNode, DexFileReader, DexResult, MethodCode};
+use crate::frontend::{ClassNode, DexFileReader, DexResult, MethodCode, NameMappings};
 use crate::ir::splitter::Splitter;
 use crate::ir::{
     arg::InsnArg,
@@ -206,9 +206,17 @@ impl DecompilerContext {
 
     /// Create a new decompiler context from a DEX file
     pub fn from_file<P: AsRef<Path>>(path: P) -> DexResult<Self> {
+        Self::from_file_with_names(path, &NameMappings::new())
+    }
+
+    /// [`Self::from_file`], reading the program under the names of `mappings`.
+    pub fn from_file_with_names<P: AsRef<Path>>(
+        path: P,
+        mappings: &NameMappings,
+    ) -> DexResult<Self> {
         let reader = std::thread::scope(|scope| {
             let platform = scope.spawn(crate::analysis::method_override::preload_platform_symbols);
-            let reader = DexFileReader::from_file(path);
+            let reader = DexFileReader::from_file_with_names(path, mappings);
             match platform.join() {
                 Ok(result) => result?,
                 Err(payload) => std::panic::resume_unwind(payload),

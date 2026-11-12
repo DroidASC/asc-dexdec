@@ -44,7 +44,10 @@ pub use api::{
     MethodOutput, MethodRequest, ReferenceLocation, ReferenceResults, ReferenceTarget,
     SourceLanguage, SourceUnit,
 };
-pub use frontend::{ClassNode, DexError, DexFileReader, DexResult, MethodCode, MethodNode};
+pub use frontend::{
+    ClassNode, DexError, DexFileReader, DexResult, MethodCode, MethodNode, NameMappingError,
+    NameMappings,
+};
 pub use platform_symbols::{
     default_platform_symbols, PlatformAnnotation, PlatformAnnotationValue, PlatformClass,
     PlatformConstant, PlatformConstantDomain, PlatformConstantKind, PlatformConstantMember,
