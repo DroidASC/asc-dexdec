@@ -1,6 +1,8 @@
 [package]
 name = "asc-dexdec-worker"
-version = "0.1.0"
+# Upstream dexdec's version (the root workspace's), which the worker serves;
+# tests/version.rs keeps the two equal.
+version = "1.0.2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"

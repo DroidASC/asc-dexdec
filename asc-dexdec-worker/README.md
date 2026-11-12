@@ -19,7 +19,8 @@ When none is found, asc downloads
 `asc-dexdec-worker-p<P>-<target>.tar.gz` and its `.sha256` from
 `https://github.com/DroidASC/asc-dexdec/releases/latest/download/`, where `P`
 is asc's backend protocol version, checks the digest and installs it
-(`asc install dexdec` does the same on demand). The worker's own version is
+(`asc install dexdec` does the same on demand). The worker carries upstream
+dexdec's version (the root workspace's, kept equal by `tests/version.rs`),
 independent of asc's; only the protocol version has to match, which asc checks
 with `asc-dexdec-worker --protocol-version`.
 
@@ -56,7 +57,7 @@ What `initialize` declares, and why:
 
 | Field | Value |
 |---|---|
-| `backend` | `{"name": "dexdec", "version": <this crate's version>}` |
+| `backend` | `{"name": "dexdec", "version": <upstream dexdec's version>}` |
 | `inputs` | `["archive"]`: one APK, jar or DEX file per program (upstream opens a single file); `slice` input is refused with `-33002` |
 | `languages` | `["java", "kotlin"]` |
 | `mappings` | `false`: upstream dexdec cannot rename a program's classes and members |
@@ -85,10 +86,13 @@ and asc's, never set it otherwise.
 
 ## Releases
 
-Pushing a `v<version>` tag (the version in `asc-dexdec-worker/Cargo.toml`)
-builds the worker for x86_64 / aarch64 Linux and macOS and publishes
+Pushing a `v<version>` tag (upstream dexdec's version, which
+`asc-dexdec-worker/Cargo.toml` carries) builds the worker for x86_64 / aarch64 Linux and macOS and publishes
 `asc-dexdec-worker-p<P>-<target>.tar.gz` (a directory holding the binary and
-`LICENSE`) with its `.sha256` as the latest release.
+`LICENSE`) with its `.sha256` as the latest release. Worker-only changes on
+the same upstream version are released as `v<version>-r<N>`. Upstream's own
+tags are not fetched (`git config remote.upstream.tagOpt --no-tags`) and
+never pushed here: they name upstream's releases, not this repository's.
 
 ## License
 

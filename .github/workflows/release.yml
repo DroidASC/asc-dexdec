@@ -82,10 +82,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # The worker carries upstream dexdec's version: v<version> releases it,
+      # v<version>-r<N> re-releases it with worker-only changes.
       - name: Tag matches the worker's version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' asc-dexdec-worker/Cargo.toml | head -1)
-          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^v${version//./\\.}(-r[0-9]+)?$ ]] || { echo "tag $GITHUB_REF_NAME is not v$version or v$version-r<N>"; exit 1; }
       - uses: actions/download-artifact@v8
         with:
           path: dist

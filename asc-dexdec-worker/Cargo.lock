@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "asc-dexdec-worker"
-version = "0.1.0"
+version = "1.0.2"
 dependencies = [
  "asc-decompile-protocol",
  "dexdec",
