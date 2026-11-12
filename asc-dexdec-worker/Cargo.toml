@@ -1,0 +1,33 @@
+[package]
+name = "asc-dexdec-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/DroidASC/asc-dexdec"
+description = "Upstream dexdec as asc's built-in `dexdec` decompile backend, speaking asc's backend protocol over stdio."
+publish = false
+
+# A workspace of its own: the path dependency on asc-rs (checked out next to
+# this repository as `../asc-rs`) stays out of the upstream dexdec workspace,
+# whose crates keep building without it.
+[workspace]
+
+[dependencies]
+# The protocol is defined in asc-rs; integration tests use it too.
+asc-decompile-protocol = { path = "../../asc-rs/crates/asc-decompile-protocol" }
+dexdec = { path = "../dexdec", default-features = false }
+mimalloc = "0.1.52"
+rayon = "1.12.0"
+serde_json = "1.0.154"
+
+[target.'cfg(unix)'.dependencies]
+# Moves stdout out of the way of the protocol frames (`dup2`).
+libc = "0.2.191"
+
+# As upstream's workspace: tests run real decompilation, so the dependency
+# graph is not left at O0.
+[profile.dev]
+opt-level = 1
+incremental = true
+codegen-units = 256
